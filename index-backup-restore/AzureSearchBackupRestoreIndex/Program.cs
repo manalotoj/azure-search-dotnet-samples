@@ -1,17 +1,19 @@
 ﻿// This is a prototype tool that allows for extraction of data from a search index
 // Since this tool is still under development, it should not be used for production usage
-
+using System.Collections.Generic;
+using AzureSearchBackupRestoreIndex;
 using Microsoft.Azure.Search;
 using Microsoft.Azure.Search.Models;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-
+using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
 
 namespace AzureSearchBackupRestore
 {
@@ -36,33 +38,46 @@ namespace AzureSearchBackupRestore
 
     static void Main(string[] args)
     {
+      Startup startup = new Startup();
+      IServiceCollection services = new ServiceCollection();
+      startup.ConfigureServices(services);
+      IServiceProvider provider = services.BuildServiceProvider();
+
+      var settings = provider.GetService<ImportExportSettings>();
+      var log = provider.GetService<ILoggerFactory>().CreateLogger<Program>();
 
       //Get source and target search service info and index names from appsettings.json file
       //Set up source and target search service clients
       ConfigurationSetup();
 
-      if (BackupRequired)
+      if (settings.BackupRequired)
       {
         //Backup the source index
-        Console.WriteLine("\nSTART INDEX BACKUP");
+        log.LogInformation("\nSTART INDEX BACKUP");
         BackupIndexAndDocuments();
       }
 
-      //Recreate and import content to target index
-      Console.WriteLine("\nSTART INDEX RESTORE");
-      DeleteIndex();
-      CreateTargetIndex();
-      ImportFromJSON();
-      Console.WriteLine("\r\n  Waiting 10 seconds for target to index content...");
-      Console.WriteLine("  NOTE: For really large indexes it may take longer to index all content.\r\n");
-      Thread.Sleep(10000);
+      if (settings.DeleteAndCreatedIndex)
+      {
+        //Recreate and import content to target index
+        log.LogInformation("\nSTART INDEX RESTORE");
+        DeleteIndex();
+        CreateTargetIndex();
+      }
 
-      // Validate all content is in target index
-      int sourceCount = GetCurrentDocCount(SourceIndexClient);
-      int targetCount = GetCurrentDocCount(TargetIndexClient);
-      Console.WriteLine("\nSAFEGUARD CHECK: Source and target index counts should match");
-      Console.WriteLine(" Source index contains {0} docs", sourceCount);
-      Console.WriteLine(" Target index contains {0} docs\r\n", targetCount);
+      var indexImporter = provider.GetService<IndexImporter>();
+      indexImporter.RestoreIndexes();
+
+      //Console.WriteLine("\r\n  Waiting 10 seconds for target to index content...");
+      //Console.WriteLine("  NOTE: For really large indexes it may take longer to index all content.\r\n");
+      //Thread.Sleep(10000);
+
+      //// Validate all content is in target index
+      //int sourceCount = GetCurrentDocCount(SourceIndexClient);
+      //int targetCount = GetCurrentDocCount(TargetIndexClient);
+      //Console.WriteLine("\nSAFEGUARD CHECK: Source and target index counts should match");
+      //Console.WriteLine(" Source index contains {0} docs", sourceCount);
+      //Console.WriteLine(" Target index contains {0} docs\r\n", targetCount);
 
       Console.WriteLine("Press any key to continue...");
       Console.ReadLine();
@@ -71,33 +86,31 @@ namespace AzureSearchBackupRestore
     static void ConfigurationSetup()
     {
 
-      IConfigurationBuilder builder = new ConfigurationBuilder().AddJsonFile("appsettings.json");
+      IConfigurationBuilder builder = new ConfigurationBuilder().AddJsonFile("local.appsettings.json");
       IConfigurationRoot configuration = builder.Build();
 
-      bool.TryParse(configuration["BackupRequired"], out BackupRequired);
-      SourceSearchServiceName = configuration["SourceSearchServiceName"];
-      SourceAdminKey = configuration["SourceAdminKey"];
-      SourceIndexName = configuration["SourceIndexName"];
-      TargetSearchServiceName = configuration["TargetSearchServiceName"];
-      TargetAdminKey = configuration["TargetAdminKey"];
-      TargetIndexName = configuration["TargetIndexName"];
-      BackupDirectory = configuration["BackupDirectory"];
+      bool.TryParse(configuration["ImportExportSettings:BackupRequired"], out BackupRequired);
+      SourceSearchServiceName = configuration["ImportExportSettings:SourceSearchServiceName"];
+      SourceAdminKey = configuration["ImportExportSettings:SourceAdminKey"];
+      SourceIndexName = configuration["ImportExportSettings:SourceIndexName"];
+      TargetSearchServiceName = configuration["ImportExportSettings:TargetSearchServiceName"];
+      TargetAdminKey = configuration["ImportExportSettings:TargetAdminKey"];
+      TargetIndexName = configuration["ImportExportSettings:TargetIndexName"];
+      BackupDirectory = configuration["ImportExportSettings:BackupDirectory"];
 
       Console.WriteLine("CONFIGURATION:");
       Console.WriteLine("\n  Source service and index {0}, {1}", SourceSearchServiceName, SourceIndexName);
       Console.WriteLine("\n  Target service and index: {0}, {1}", TargetSearchServiceName, TargetIndexName);
       Console.WriteLine("\n  Backup directory: " + BackupDirectory);
 
-      if (BackupRequired)
-      {
-        SourceSearchClient = new SearchServiceClient(SourceSearchServiceName, new SearchCredentials(SourceAdminKey));
-        SourceIndexClient = SourceSearchClient.Indexes.GetClient(SourceIndexName);
-      }
+      SourceSearchClient = new SearchServiceClient(SourceSearchServiceName, new SearchCredentials(SourceAdminKey));
+      SourceIndexClient = SourceSearchClient.Indexes.GetClient(SourceIndexName);
 
       TargetSearchClient = new SearchServiceClient(TargetSearchServiceName, new SearchCredentials(TargetAdminKey));
       TargetIndexClient = TargetSearchClient.Indexes.GetClient(TargetIndexName);
 
     }
+    #region Export Indexes
     static void BackupIndexAndDocuments()
     {
       // Backup the index schema to the specified backup directory
@@ -336,51 +349,6 @@ namespace AzureSearchBackupRestore
       return -1;
 
     }
-    static void ImportFromJSON()
-    {
-      Console.WriteLine("\n  Upload index documents from saved JSON files");
-      // Take JSON file and import this as-is to target index
-      Uri ServiceUri = new Uri("https://" + TargetSearchServiceName + ".search.windows.net");
-      HttpClient HttpClient = new HttpClient();
-      HttpClient.DefaultRequestHeaders.Add("api-key", TargetAdminKey);
-
-      try
-      {
-        foreach (string fileName in Directory.GetFiles(BackupDirectory, SourceIndexName + "*.json"))
-        {
-          // Target Index
-          Uri uri = new Uri(ServiceUri, "/indexes/" + TargetIndexName + "/docs/index");
-
-          // Determine file length
-          long length = new FileInfo(fileName).Length;
-          Console.WriteLine("  -Uploading documents from file {0} with length {1}", fileName, length.ToString());
-
-          // Limit is 16 MB per request in API
-          if (length < 16000000)
-          {
-            // Importing entire file
-            string json = File.ReadAllText(fileName);
-            Console.WriteLine("  -Importing whole file");
-            HttpResponseMessage response = AzureSearchHelper.SendSearchRequest(HttpClient, HttpMethod.Post, uri, json);
-            response.EnsureSuccessStatusCode();
-          }
-          else
-          {
-            // Importing one line at a time
-            Console.WriteLine("  -Importing by line");
-            foreach (string json in File.ReadLines(fileName))
-            {
-              HttpResponseMessage response = AzureSearchHelper.SendSearchRequest(HttpClient, HttpMethod.Post, uri, json);
-              response.EnsureSuccessStatusCode();
-            }
-          }
-
-        }
-      }
-      catch (Exception ex)
-      {
-        Console.WriteLine("  Error: {0}", ex.Message.ToString());
-      }
-    }
+    #endregion Export Indexes
   }
 }
