@@ -20,14 +20,11 @@ namespace AzureSearchBackupRestoreIndex.Tests.Unit
   [TestClass]
   public class ImportExportTest
   {
-    private static SearchServiceClient SourceSearchClient;
-    private static ISearchIndexClient SourceIndexClient;
-    private static SearchServiceClient TargetSearchClient;
-    private static ISearchIndexClient TargetIndexClient;
-
-    private static ILogger<ImportExportTest> log;
-    private static readonly ImportExportSettings settings;
+    private SearchServiceClient targetSearchClient;
+    private ISearchIndexClient targetIndexClient;
+    private ILogger<ImportExportTest> log;
     private readonly IndexImporter importer;
+    private readonly ImportExportSettings settings;
 
     public ImportExportTest()
     {
@@ -37,7 +34,12 @@ namespace AzureSearchBackupRestoreIndex.Tests.Unit
       IServiceProvider provider = services.BuildServiceProvider();
 
       log = provider.GetService<ILoggerFactory>().CreateLogger<ImportExportTest>();
+      settings = provider.GetService<ImportExportSettings>();
       importer = provider.GetService<IndexImporter>();
+
+
+      targetSearchClient = new SearchServiceClient(settings.TargetSearchServiceName, new SearchCredentials(settings.TargetAdminKey));
+      targetIndexClient = targetSearchClient.Indexes.GetClient(settings.TargetIndexName);
     }
 
     [TestMethod]
@@ -52,6 +54,28 @@ namespace AzureSearchBackupRestoreIndex.Tests.Unit
       importer.RestoreIndexes("c:\\IndexBackup\\kmcsearch-index1.json");
     }
 
+    [TestMethod]
+    public void RestoreExtraLargeJsonFileUsingMergeOrUploadApproach()
+    {
+      importer.RestoreIndexes("c:\\IndexBackup\\kmcsearch-index86.json");
+    }
+
+    [TestMethod]
+    public void RestoreIndex()
+    {
+      DeleteIndex();
+      CreateTargetIndex();
+    }
+
+    [TestMethod]
+    public void MergeOrUploadJsonFiles()
+    {
+      DeleteIndex();
+      CreateTargetIndex();
+      importer.RestoreIndexes("c:\\IndexBackup\\mergeOrUpload-sample-1.json");
+      importer.RestoreIndexes("c:\\IndexBackup\\mergeOrUpload-sample-2.json");
+    }
+
     [TestMethod, Ignore]
     public void GetTranslationContentLengths()
     {
@@ -63,6 +87,8 @@ namespace AzureSearchBackupRestoreIndex.Tests.Unit
     {
       log.LogInformation("test");
     }
+
+    #region utils
 
     private void TraverseTranslations(string jsonFile)
     {
@@ -89,5 +115,58 @@ namespace AzureSearchBackupRestoreIndex.Tests.Unit
         }
       }
     }
+
+    private bool DeleteIndex()
+    {
+      Console.WriteLine("\n  Delete target index {0} in {1} search service, if it exists", settings.TargetIndexName, settings.TargetSearchServiceName);
+      // Delete the index if it exists
+      try
+      {
+        targetSearchClient.Indexes.Delete(settings.TargetIndexName);
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine("  Error deleting index: {0}\r\n", ex.Message);
+        Console.WriteLine("  Did you remember to set your SearchServiceName and SearchServiceApiKey?\r\n");
+        return false;
+      }
+
+      return true;
+    }
+
+    private void CreateTargetIndex()
+    {
+      Console.WriteLine("\n  Create target index {0} in {1} search service", settings.TargetIndexName, settings.TargetSearchServiceName);
+      // Use the schema file to create a copy of this index
+      // I like using REST here since I can just take the response as-is
+
+
+      string json = File.ReadAllText(settings.BackupDirectory + settings.SourceIndexName + ".schema");
+
+
+      // Do some cleaning of this file to change index name, etc
+      json = "{" + json.Substring(json.IndexOf("\"name\""));
+      int indexOfIndexName = json.IndexOf("\"", json.IndexOf("name\"") + 5) + 1;
+      int indexOfEndOfIndexName = json.IndexOf("\"", indexOfIndexName);
+      json = json.Substring(0, indexOfIndexName) + settings.TargetIndexName + json.Substring(indexOfEndOfIndexName);
+
+      Uri ServiceUri = new Uri("https://" + settings.TargetSearchServiceName + ".search.windows.net");
+      HttpClient HttpClient = new HttpClient();
+      HttpClient.DefaultRequestHeaders.Add("api-key", settings.TargetAdminKey);
+
+      try
+      {
+        Uri uri = new Uri(ServiceUri, "/indexes");
+        HttpResponseMessage response = AzureSearchHelper.SendSearchRequest(HttpClient, HttpMethod.Post, uri, json);
+        response.EnsureSuccessStatusCode();
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine("  Error: {0}", ex.Message.ToString());
+      }
+
+    }
+
+    #endregion utils
   }
 }

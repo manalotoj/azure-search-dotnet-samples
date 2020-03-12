@@ -9,6 +9,7 @@ using System.IO;
 using System.Net.Http;
 using System.Text;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 
 namespace AzureSearchBackupRestore
 {
@@ -77,6 +78,7 @@ namespace AzureSearchBackupRestore
           var indexCount = 0;
           while (reader.Read())
           {
+            // look for immediate child array element
             if (reader.TokenType == JsonToken.StartArray)
             {
               while (reader.Read() && reader.TokenType != JsonToken.EndArray)
@@ -107,15 +109,23 @@ namespace AzureSearchBackupRestore
 
                   if (json.Length < settings.MaxRequestSize)
                   {
-                    currentLength = baseLength + JsonConvert.SerializeObject(currentIndex).Length;
+                    currentLength = baseLength + json.Length;
                     jsonArray.Add(currentIndex);
                   }
                   else
                   {
-                    log.LogWarning($"Index at position {indexCount - 1} with length of {json.Length} exceeds maximum size.");
-
-                    FileInfo fileInfo = new FileInfo(jsonFile);
-                    File.WriteAllText($"c:\\temp\\indexes\\{fileInfo.Name}-{indexCount}.json", json);
+                    log.LogWarning($"Index within json file '{jsonFile}' at position {indexCount - 1} with length of {json.Length} exceeds maximum size.");
+                    log.LogInformation($"Begin processing large index from '{jsonFile}' at position {indexCount - 1} using mergeOrUpload");
+                    //FileInfo fileInfo = new FileInfo(jsonFile);
+                    //File.WriteAllText($"c:\\temp\\indexes\\{fileInfo.Name}-{indexCount}.json", json);
+                    try
+                    {
+                      RestoreIndex(currentIndex);
+                    }
+                    catch (Exception exc)
+                    {
+                      log.LogError(exc, "Failed to restore large index within json file  '{jsonFile}' at position {indexCount - 1}.");
+                    }
                   }
                 }
               }
@@ -126,6 +136,29 @@ namespace AzureSearchBackupRestore
           {
             ImportFromJson(JsonConvert.SerializeObject(rootJObject));
           }
+        }
+      }
+    }
+
+    protected virtual void RestoreIndex(JObject currentIndex)
+    {
+      string md5 = (string)currentIndex["md5"];
+      foreach (var jtoken in currentIndex.Children())
+      {
+        var prop = jtoken as JProperty;
+        if (prop != null && prop.Name != "md5")
+        {
+          JObject searchIndex = new JObject();
+          searchIndex.Add("@search.action", "mergeOrUpload");
+          searchIndex.Add("md5", md5);
+          searchIndex.Add(prop);
+
+          JArray jsonArray = new JArray();
+          jsonArray.Add(searchIndex);
+          JObject rootJObject = new JObject();
+          rootJObject.Add(Constants.ValuePropertyName, jsonArray);
+
+          ImportFromJson(JsonConvert.SerializeObject(rootJObject));
         }
       }
     }
