@@ -6,6 +6,7 @@ namespace AzureSearchBackupRestoreIndex
 {
   public partial class ImportExportSettings
   {
+    public int MaxRequestSize { get; set; }
     public bool BackupRequired { get; set; }
     public bool DeleteAndCreatedIndex { get; set; }
     public string SourceSearchServiceName { get; set; }

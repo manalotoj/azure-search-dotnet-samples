@@ -86,7 +86,7 @@ namespace AzureSearchBackupRestore
                 JObject currentIndex = JObject.Load(reader);
                 string json = JsonConvert.SerializeObject(currentIndex);
 
-                if (json.Length + currentLength < Constants.MaxRequestSize)
+                if (json.Length + currentLength < settings.MaxRequestSize)
                 {
                   currentLength += json.Length;
                   jsonArray.Add(currentIndex);
@@ -105,7 +105,7 @@ namespace AzureSearchBackupRestore
                   rootJObject.Add(Constants.ValuePropertyName, jsonArray);
                   currentLength = baseLength;
 
-                  if (json.Length < Constants.MaxRequestSize)
+                  if (json.Length < settings.MaxRequestSize)
                   {
                     currentLength = baseLength + JsonConvert.SerializeObject(currentIndex).Length;
                     jsonArray.Add(currentIndex);
