@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using Serilog;
 using System.Reflection.Metadata;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Azure.Search.Models;
 
 namespace AzureSearchBackupRestoreIndex.Tests.Unit
 {
@@ -76,6 +77,27 @@ namespace AzureSearchBackupRestoreIndex.Tests.Unit
       importer.RestoreIndexes("c:\\IndexBackup\\mergeOrUpload-sample-2.json");
     }
 
+    [TestMethod]
+    public void ValidateCounts()
+    {
+      var sourceSearchServiceName = "";
+      var sourceAdminKey = "";
+      var indexName = "";
+      var targetSearchServiceName = "";
+      var targetAdminKey = "";
+
+      var client = new SearchServiceClient(sourceSearchServiceName, new SearchCredentials(sourceAdminKey));
+      var indexClient = client.Indexes.GetClient(indexName);
+      var sourceDocCount = GetCurrentDocCount(indexClient);
+
+      client = new SearchServiceClient(targetSearchServiceName, new SearchCredentials(targetAdminKey));
+      indexClient = client.Indexes.GetClient(indexName);
+      var targetDocCount = GetCurrentDocCount(indexClient);
+
+      log.LogInformation($"target count: {sourceDocCount}");
+      log.LogInformation($"target count: {targetDocCount}");
+    }
+
     [TestMethod, Ignore]
     public void GetTranslationContentLengths()
     {
@@ -89,6 +111,35 @@ namespace AzureSearchBackupRestoreIndex.Tests.Unit
     }
 
     #region utils
+
+    static int GetCurrentDocCount(ISearchIndexClient IndexClient)
+    {
+
+      // Get the current doc count of the specified index
+      try
+      {
+        SearchParameters sp = new SearchParameters()
+        {
+          SearchMode = SearchMode.All,
+          IncludeTotalResultCount = true
+        };
+
+        IndexClient.LongRunningOperationRetryTimeout = 600;
+
+        // search will return lots of data and may not return if "$top=1" is not specified
+        DocumentSearchResult<Microsoft.Azure.Search.Models.Document> response = IndexClient.Documents.Search("*&$top=1", sp);
+        return Convert.ToInt32(response.Count);
+
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine("  Error: {0}", ex.Message.ToString());
+      }
+
+      return -1;
+
+    }
+
 
     private void TraverseTranslations(string jsonFile)
     {
